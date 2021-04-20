@@ -1,0 +1,147 @@
+name: win_mingw
+on:
+  push:
+    paths-ignore:
+      - "LICENSE"
+      - "README.md"
+      - ".github/workflows/linux*.yml"
+      - ".github/workflows/macos*.yml"
+  pull_request:
+    paths-ignore:
+      - "LICENSE"
+      - "README.md"
+      - ".github/workflows/linux*.yml"
+      - ".github/workflows/macos*.yml"
+  workflow_dispatch:
+
+jobs:
+  build_package_upload:
+    env:
+      APP_NAME: qt-cjk-font-test-1
+
+      MAKE_INSTALL_DIR_PATH: ${{ github.workspace }}\GHA\BUILD
+      PACKAGE_OUTPUT_PATH: ${{ github.workspace }}\GHA\PACKAGE
+
+    runs-on: windows-2019
+    strategy:
+      matrix:
+        include:
+          - qt_ver: 5.15.2
+            qt_arch: win64_mingw81
+            qt_tools: "tools_mingw,8.1.0,qt.tools.win64_mingw810"
+            qt_tool_mingw_dir_name: mingw810_64
+
+    steps:
+      - name: What time?
+        id: my_luminous_watch
+        uses: 1466587594/get-current-time@v2
+        with:
+          format: "YYYYMMDDHHmmss"
+
+      - uses: actions/checkout@v2
+
+      - name: Create directories
+        run: |
+          New-Item -Force -Path '${{ env.MAKE_INSTALL_DIR_PATH }}' -ItemType 'Directory'
+          New-Item -Force -Path '${{ env.PACKAGE_OUTPUT_PATH }}' -ItemType 'Directory'
+
+      # ====================
+      # ----- Setup Qt -----
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v2.13.0
+        with:
+          version: ${{ matrix.qt_ver }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          tools: ${{ matrix.qt_tools }}
+
+      - name: Find Qt 5
+        if: ${{ startsWith(matrix.qt_ver, '5.') }}
+        run: |
+          Write-Output -InputObject 'Qt5_DIR = ${{ env.Qt5_DIR }}'
+          Write-Output -InputObject 'Qt_DIR=${{ env.Qt5_DIR }}' | `
+            Out-File -FilePath ${Env:\GITHUB_ENV} -Encoding utf8 -Append
+
+      - name: Configure Qt env
+        run: |
+          Write-Output -InputObject '${{ env.Qt_DIR }}\bin' | `
+            Out-File -FilePath ${Env:\GITHUB_PATH} -Encoding utf8 -Append
+          [System.IO.Path]::GetFullPath(
+            '${{ github.workspace }}\..\Qt\Tools\${{ matrix.qt_tool_mingw_dir_name }}\bin') | `
+              Out-File -FilePath ${Env:\GITHUB_PATH} -Encoding utf8 -Append
+
+      - name: Test Qt & env
+        run: |
+          Write-Output -InputObject ${Env:\Path}
+
+          Get-Command -Name 'qmake.exe' | Format-List
+          & 'qmake.exe' '-query'
+          if ($LASTEXITCODE -ne 0) {
+            throw "qmake.exe failed: $LASTEXITCODE"
+          }
+
+          Get-Command -Name 'mingw32-make.exe' | Format-List
+          & 'mingw32-make.exe' '--version'
+          if ($LASTEXITCODE -ne 0) {
+            throw "mingw32-make.exe failed: $LASTEXITCODE"
+          }
+
+      # =====================================
+      # ----- Missile launch confirmed! -----
+
+      - name: Build
+        run: |
+          & 'qmake.exe' `
+            '-makefile' `
+            '-o' 'Makefile' `
+            '-spec' 'win32-g++' `
+            '-after' `
+            'TARGET=${{ env.APP_NAME }}' `
+            'CONFIG+=release' `
+            '${{ github.workspace }}'
+          if (${LASTEXITCODE} -ne 0) {
+            throw "qmake.exe failed: ${LASTEXITCODE}"
+          }
+
+          & 'mingw32-make.exe' `
+            '-f' 'Makefile' `
+            'release'
+          if (${LASTEXITCODE} -ne 0) {
+            throw "mingw32-make.exe failed: ${LASTEXITCODE}"
+          }
+
+          & 'mingw32-make.exe' `
+            'install' `
+            'INSTALL_ROOT=${{ env.MAKE_INSTALL_DIR_PATH }}'
+          if (${LASTEXITCODE} -ne 0) {
+            throw "mingw32-make.exe install failed: ${LASTEXITCODE}"
+          }
+
+          Get-ChildItem -Recurse -Path '${{ env.MAKE_INSTALL_DIR_PATH }}'
+
+      - name: Deploy and package
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          & 'windeployqt.exe' `
+          '--no-translations' `
+          '--compiler-runtime' `
+          '--verbose' '2' `
+          '${{ env.MAKE_INSTALL_DIR_PATH }}'
+
+          $zipParameters = @{
+            'Path'             = '${{ env.MAKE_INSTALL_DIR_PATH }}'
+            'DestinationPath'  = '${{ env.PACKAGE_OUTPUT_PATH }}/${{ env.APP_NAME }}.zip'
+            'Force'            = $true
+            'CompressionLevel' = 'Optimal'
+          }
+
+          Compress-Archive @zipParameters
+
+      - name: Upload packaged files
+        uses: actions/upload-artifact@v2
+        with:
+          if-no-files-found: error
+          name: "${{ steps.my_luminous_watch.outputs.formattedTime }}_${{ matrix.qt_ver }}"
+          path: "${{ env.PACKAGE_OUTPUT_PATH }}/${{ env.APP_NAME }}.zip"

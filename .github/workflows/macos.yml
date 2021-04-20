@@ -1,0 +1,113 @@
+name: macos
+on:
+  push:
+    paths-ignore:
+      - "LICENSE"
+      - "README.md"
+      - ".github/workflows/windows*.yml"
+      - ".github/workflows/linux*.yml"
+  pull_request:
+    paths-ignore:
+      - "LICENSE"
+      - "README.md"
+      - ".github/workflows/windows*.yml"
+      - ".github/workflows/linux*.yml"
+  workflow_dispatch:
+
+jobs:
+  build_package_upload:
+    env:
+      APP_NAME: qt-cjk-font-test-1
+
+      PACKAGE_DIR_PATH: ${{ github.workspace }}/${{ github.run_id }}/package
+
+    runs-on: macos-10.15
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      matrix:
+        xcode_ver: [11.7] # Only one!
+        qt_ver: [5.15.2]
+        experimental: [false]
+    steps:
+      - name: What time?
+        id: my_luminous_watch
+        uses: 1466587594/get-current-time@v2
+        with:
+          format: "YYYYMMDDHHmmss"
+
+      - uses: actions/checkout@v2
+
+      - name: Create directories
+        run: |
+          mkdir -p '${{ env.PACKAGE_DIR_PATH }}'
+
+      # Choose the latest supported SDK
+      #   https://doc.qt.io/qt-5/macos.html#supported-versions
+      #   https://github.com/actions/virtual-environments/blob/main/images/macos/macos-10.15-Readme.md#xcode
+      - name: Use Xcode Command Line Tools ${{ matrix.xcode_ver }}
+        run: |
+          xcode-select --print-path
+          clang++ -v
+
+          sudo xcode-select --switch '/Applications/Xcode_${{ matrix.xcode_ver }}.app'
+          xcode-select --print-path
+          clang++ -v
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v2.13.0
+        with:
+          version: ${{ matrix.qt_ver }}
+          target: desktop
+
+      - name: Find Qt 5
+        if: ${{ startsWith(matrix.qt_ver, '5') }}
+        run: |
+          echo 'Qt5_DIR = ${{ env.Qt5_DIR }}'
+          echo 'Qt_DIR=${{ env.Qt5_DIR }}' >> ${GITHUB_ENV}
+
+      - name: Configure Qt env
+        run: |
+          echo '${{ env.Qt_DIR }}/bin' >> ${GITHUB_PATH}
+
+      - name: Test Qt & env
+        run: |
+          echo ${PATH}
+
+          which 'qmake'
+
+          qmake '-query'
+
+      - name: Build
+        run: |
+          qmake \
+            '-makefile' \
+            '-o' 'Makefile' \
+            '-spec' 'macx-clang' \
+            '-after' \
+            'TARGET=${{ env.APP_NAME }}' \
+            'CONFIG+=release' \
+            '${{ github.workspace }}'
+
+          make
+
+          make install INSTALL_ROOT='${{ env.PACKAGE_DIR_PATH }}'
+
+          ls -la '${{ env.PACKAGE_DIR_PATH }}'
+
+      - name: Package
+        run: |
+          pushd '${{ env.PACKAGE_DIR_PATH }}'
+      
+          macdeployqt \
+            '${{ env.APP_NAME }}.app' \
+            -verbose=3 \
+            -dmg
+
+          popd
+
+      - name: Upload dmg
+        uses: actions/upload-artifact@v2
+        with:
+          if-no-files-found: error
+          name: "${{ steps.my_luminous_watch.outputs.formattedTime }}_${{ matrix.qt_ver }}_${{ env.APP_NAME }}_dmg"
+          path: "${{ env.PACKAGE_DIR_PATH }}/*.dmg"
